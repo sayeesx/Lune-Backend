@@ -1,17 +1,34 @@
-import { getOpenAIReply } from "../utils/openaiClient.js";
-
-export const doctorController = async (req, res, next) => {
+export const scanvisionController = async (req, res, next) => {
   try {
-    const { message } = req.body;
-    if (!message) return res.status(400).json({ error: "Message required." });
+    const { imageData, message } = req.body;
+    
+    const reply = `📸 **ScanVision** - Medical Image Analysis (Coming Soon)
 
-    // Doctor system prompt, non-diagnostic disclaimer
-    const systemPrompt = `
-      You are a helpful medical assistant. Provide general advice on symptoms without offering diagnosis. Always include: "This is not a diagnosis. For emergencies, consult a doctor."
-    `;
+**Planned Features:**
+- 🔍 **Prescription OCR**: Extract text from prescription images
+- 📊 **Lab Report Scanning**: Digitize lab result documents
+- 💊 **Pill Identification**: Identify medications from photos
+- 📄 **Medical Document Analysis**: Process health records
 
-    const reply = await getOpenAIReply(message, systemPrompt);
-    res.json({ reply });
+**Current Status:** Development in progress
+**Expected Launch:** Q1 2026
+
+**Why the wait?**
+Vision-language models require additional integration and testing to ensure medical-grade accuracy for patient safety.
+
+⚠️ This feature will provide image analysis assistance but will NOT replace professional medical document review.
+
+*Thank you for your patience as we build this feature!*`;
+    
+    res.json({ 
+      success: true,
+      reply: reply,
+      metadata: {
+        feature: "ScanVision - Medical Image AI",
+        status: "Coming Soon",
+        planned_models: ["Llama 3.2 Vision", "GPT-4 Vision"]
+      }
+    });
   } catch (err) {
     next(err);
   }
