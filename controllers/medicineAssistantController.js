@@ -14,13 +14,12 @@ function escapeRegex(literal) {
 function cleanMedicineName(name) {
   if (!name) return '';
   let s = String(name).trim();
-  s = s.replace(/\b(what is|tell me|show|about|the|content in|price of|rate of|side effects of)\b/gi, '').trim();
+  s = s.replace(/\b(what is|tell me|show|about|the|content in|price of|rate of|side effects of|actual|real|exact|current)\b/gi, '').trim();
   s = s.replace(/[-\s]+/g, ' ').trim();
   s = s.replace(/[^a-zA-Z0-9+\-\s]/g, '').trim();
   return s;
 }
 
-// Levenshtein distance for fuzzy matching
 function levenshteinDistance(a, b) {
   const matrix = [];
   for (let i = 0; i <= b.length; i++) {
@@ -62,33 +61,66 @@ function pickMedicineFields(doc) {
   };
 }
 
-// More permissive medicine query detector
 function isLikelyMedicineQuery(text) {
-  const q = String(text || '').toLowerCase();
+  const q = String(text || '').toLowerCase().trim();
+  
+  if (q.length < 3) return false;
+  
+  const blacklist = ['hello', 'hi', 'hey', 'thanks', 'thank you', 'ok', 'okay', 'yes', 'no', 'bye', 'goodbye'];
+  if (blacklist.includes(q)) return false;
+  
   const keywords = [
     'price', 'cost', 'rate', 'composition', 'content', 'ingredients', 'side effect', 'effects',
     'interactions', 'alternative', 'substitute', 'tablet', 'capsule', 'syrup', 'injection',
-    'mg', 'ml', 'mcg', 'g', 'medicine', 'drug', 'manufacturer', 'pack size', 'what is', 'tell me'
+    'mg', 'ml', 'mcg', 'g', 'medicine', 'drug', 'manufacturer'
   ];
+  if (keywords.some(k => q.includes(k))) return true;
   
-  // Also check if query has medicine-like structure (word + number pattern)
-  const hasMedicinePattern = /\b[a-z]{3,}\s*\d+/i.test(q);
+  if (/\b[a-z]{3,}\s*\d+/i.test(q)) return true;
   
-  return keywords.some(k => q.includes(k)) || hasMedicinePattern;
+  const genericPatterns = /^(who|when|where|why|how are|how do|what are|tell me about life|explain politics|weather)/i;
+  if (genericPatterns.test(q)) return false;
+  
+  return true;
 }
 
-const MEDGUIDE_SYSTEM = `You are Lune MedGuide, an intelligent medical information assistant connected to a MongoDB database of Indian medicines.
-Your primary job is to understand user queries related to medicines and respond with accurate information from the database.
+const EMPATHETIC_SYSTEM = `You are Lune MedGuide, a helpful and intelligent AI assistant specializing in Indian medicines.
 
-Guidelines:
-1. If the user's query is not related to any medicine, politely respond: "I can only provide information about medicines. Please ask about a specific medicine name or related detail."
-2. If the query mentions a specific medicine, analyze the query to understand what information the user needs — such as price, manufacturer, type, composition, side effects, or alternatives.
-3. Search the MongoDB medicines collection for that medicine name. Available fields: name, price, manufacturer_name, type, pack_size_label, short_composition1, salt_composition, medicine_desc, side_effects, drug_interactions.
-4. Provide a clear and helpful reply containing only the relevant details asked for by the user.
-5. If no details are found, respond: "Sorry, I couldn't find specific information about that medicine in my database."
-6. If any field is missing or null, say "Information not available" for that field.
-7. Keep responses concise and mobile-friendly (2-5 sentences depending on query complexity).
-8. Always emphasize safety and suggest consulting a healthcare professional for personalized advice.`;
+Be conversational, natural, and helpful - like a friendly pharmacist or medical advisor.
+
+TONE:
+- Talk naturally, not robotically
+- Be warm and helpful
+- Show intelligence and understanding
+- Use varied phrasing
+
+EXAMPLES OF GOOD RESPONSES:
+- "Ah, looking for info on Azithral! It's an antibiotic containing Azithromycin, made by Alembic Pharmaceuticals. A pack of 3 tablets (500mg each) costs around ₹350. It's commonly prescribed for bacterial infections."
+- "Duoflo 500? Great choice for respiratory infections. It's made by Cipla, costs about ₹132 for 5 tablets, and contains Azithromycin 500mg."
+- "I see you're asking about Dolo 650. It's a popular paracetamol-based fever reducer. Manufactured by Micro Labs, usually costs ₹30-35 for a strip of 15 tablets."
+- "Hmm, I couldn't find 'duooflo' but did you mean Duoflo? Let me know and I'll get you the details!"
+
+WHEN USER JUST TYPES A MEDICINE NAME:
+- Understand they want general information
+- Provide: name, manufacturer, price, composition, what it's used for, pack size
+- Be comprehensive but concise (3-5 sentences)
+
+ALWAYS INCLUDE:
+- Price (if available)
+- Manufacturer
+- Composition/Active ingredient
+- Brief use case ("commonly used for...")
+- Pack size/type
+
+HANDLING TYPOS:
+- Be understanding: "I think you meant..."
+- Offer suggestions naturally
+- Don't be pedantic
+
+END WITH:
+"This information is for educational purposes only. Please consult a licensed healthcare professional for proper diagnosis and treatment."
+
+BE CONVERSATIONAL AND INTELLIGENT - you're a smart AI, not a rigid system!`;
 
 async function extractQueryIntent(message) {
   const m = String(message || '').trim();
@@ -102,22 +134,23 @@ async function extractQueryIntent(message) {
     ...overrides
   });
 
-  // Enhanced patterns for better understanding
   const comp = m.match(/(?:content|composition|ingredients?)(?:\s+(?:of|in))?\s+([A-Za-z0-9\- ]+)/i);
   if (comp) return make({ medicine_name: comp[1].trim(), query_type: "composition", confidence: 0.9 });
 
-  // Better price patterns - including "rate"
+  // IMPROVED PRICE PATTERNS - handles "duoflo actual price"
   const pricePatterns = [
     /(?:price|cost|rate|how much)\s+(?:of|for|is)\s+(.+?)(?:\s+(?:by|from|tablet|capsule|syrup|$)|$)/i,
     /what\s+is\s+(?:the\s+)?(?:price|cost|rate)\s+(?:of|for)\s+(.+?)(?:\s+(?:by|from|tablet|capsule|syrup|$)|$)/i,
-    /(.+?)\s+(?:price|cost|rate)(?:\s|$)/i
+    /(.+?)\s+(?:actual|real|exact|current|latest)?\s*(?:price|cost|rate)(?:\s|$)/i
   ];
   
   for (const pattern of pricePatterns) {
     const match = m.match(pattern);
     if (match) {
-      const name = match[1].trim();
-      if (!/^(what|show|tell|give|find|get|the)\b/i.test(name)) {
+      let name = match[1].trim();
+      // Remove modifier words
+      name = name.replace(/\b(actual|real|exact|current|latest|today|now)\b/gi, '').trim();
+      if (name && !/^(what|show|tell|give|find|get|the)\b/i.test(name)) {
         return make({ medicine_name: name, query_type: "price", confidence: 0.9 });
       }
     }
@@ -165,7 +198,7 @@ async function extractQueryIntent(message) {
   const singleWord = m.match(/\b([a-z]{3,})\b/i);
   if (singleWord) {
     const word = singleWord[1].toLowerCase();
-    const stopWords = ['what', 'tell', 'show', 'about', 'price', 'side', 'effect', 'alternative', 'tablet', 'capsule', 'rate', 'cost'];
+    const stopWords = ['what', 'tell', 'show', 'about', 'side', 'effect', 'tablet', 'capsule', 'actual', 'real', 'price', 'cost', 'rate'];
     if (!stopWords.includes(word)) {
       return make({
         medicine_name: singleWord[1],
@@ -176,49 +209,50 @@ async function extractQueryIntent(message) {
     }
   }
 
-  const system = 'Extract medicine query intent in strict JSON for downstream parsing.';
-  const user = `
-Analyze this user query: "${message}"
+  const system = 'You are a JSON extractor. Return ONLY valid JSON, no explanations, no markdown.';
+  const user = `Extract medicine info from: "${message}"
 
-Return ONLY a JSON object:
+RETURN ONLY THIS JSON (complete it fully):
 {
-  "medicine_name": "exact medicine name with strength if mentioned",
-  "manufacturer": "company name if mentioned, otherwise null",
-  "type": "medicine form if mentioned (tablet/syrup/etc), otherwise null",
-  "query_type": "one of: price, composition, side_effects, alternatives, full_details",
-  "confidence": 0.95
-}`.trim();
-
-  const parsed = await getMistralJSON({ user, system, temperature: 0, top_p: 1, maxTokens: 300 });
-  return parsed || make();
+"medicine_name": "name here",
+"manufacturer": null,
+"type": null,
+"query_type": "price",
+"confidence": 0.95
 }
 
-// Fuzzy search for similar medicine names
+Valid query_type: price, composition, side_effects, alternatives, full_details`;
+
+  const parsed = await getMistralJSON({ 
+    user, 
+    system, 
+    temperature: 0, 
+    top_p: 1, 
+    maxTokens: 400
+  });
+  
+  if (parsed && parsed.medicine_name) {
+    return parsed;
+  }
+  
+  return make();
+}
+
 async function findSimilarMedicines(searchTerm, limit = 5) {
   const term = searchTerm.toLowerCase().trim();
-  
-  // Get medicines that start with similar letters or have similar length
   const candidates = await Medicine.find({
     $or: [
       { name: { $regex: `^${escapeRegex(term.charAt(0))}`, $options: 'i' } },
       { name: { $regex: escapeRegex(term.substring(0, 3)), $options: 'i' } }
     ]
-  })
-  .select('name')
-  .limit(50)
-  .lean();
+  }).select('name').limit(50).lean();
 
-  // Calculate distance and sort
   const withDistance = candidates.map(med => ({
     name: med.name,
     distance: levenshteinDistance(term, med.name.toLowerCase())
   }));
 
-  return withDistance
-    .filter(m => m.distance <= 3) // Max 3 character difference
-    .sort((a, b) => a.distance - b.distance)
-    .slice(0, limit)
-    .map(m => m.name);
+  return withDistance.filter(m => m.distance <= 3).sort((a, b) => a.distance - b.distance).slice(0, limit).map(m => m.name);
 }
 
 async function findAlternatives(medicine) {
@@ -231,11 +265,7 @@ async function findAlternatives(medicine) {
     manufacturer_name: { $ne: medicine.manufacturer_name },
     is_discontinued: false
   };
-  return Medicine.find(query)
-    .select('name manufacturer_name price type pack_size_label short_composition1 salt_composition')
-    .sort('price')
-    .limit(5)
-    .lean();
+  return Medicine.find(query).select('name manufacturer_name price type pack_size_label short_composition1 salt_composition').sort('price').limit(5).lean();
 }
 
 async function generateResponse(queryIntent, medicines, originalMessage) {
@@ -252,26 +282,12 @@ async function generateResponse(queryIntent, medicines, originalMessage) {
   const alternatives = await findAlternatives(primary);
   const slimAlts = alternatives.map(pickMedicineFields);
 
-  const userPrompt = `
-User query: "${String(originalMessage || '').trim()}"
-Query type: ${queryIntent.query_type}
-Primary medicine: ${JSON.stringify(slimPrimary)}
-Alternatives (up to 5): ${JSON.stringify(slimAlts)}
-
-Instructions:
-- Start with ${queryIntent.query_type}.
-- Include manufacturer, type, price, pack size if available; if missing, write "Information not available".
-- Summarize composition; if missing, write "Information not available".
-- Note key side effects and drug interactions if present; else "Information not available".
-- For alternatives, list 1–3 brief comparisons or "Information not available".
-- Keep response 2-5 sentences, mobile-friendly.
-- No dosing or diagnosis; include relevant precautions.
-`.trim();
+  const userPrompt = `User: "${originalMessage}"\nQuery: ${queryIntent.query_type}\nMedicine: ${JSON.stringify(slimPrimary)}\nAlternatives: ${JSON.stringify(slimAlts)}\n\nRespond naturally and friendly (2-5 sentences) focusing on ${queryIntent.query_type}. Include price, manufacturer, composition if available. Say "Information not available" for missing fields.`;
 
   const reply = await getMistralText({
     user: userPrompt,
-    system: MEDGUIDE_SYSTEM,
-    temperature: 0.2,
+    system: EMPATHETIC_SYSTEM,
+    temperature: 0.3,
     top_p: 1,
     maxTokens: 600
   });
@@ -286,9 +302,9 @@ export async function medicineAssistantController(req, res, next) {
       return res.status(400).json({
         error: "Please provide a medicine query",
         examples: [
-          "What is the price of Paracetamol 500mg?",
-          "Tell me about Allegra tablet",
-          "Show alternatives to Azithral by Alembic"
+          "Azithral",
+          "Dolo 650 price",
+          "Paracetamol side effects"
         ]
       });
     }
@@ -296,13 +312,13 @@ export async function medicineAssistantController(req, res, next) {
     if (!isLikelyMedicineQuery(message)) {
       return res.json({
         success: false,
-        reply: "I can only provide information about medicines. Please ask about a specific medicine name or related detail.",
+        reply: "I'd love to help! Could you tell me which medicine you're asking about? You can just type the name, or ask something specific.",
         examples: [
-          "Price of Paracetamol 650 tablet",
-          "Side effects of Allegra 120mg",
-          "Alternatives to Azithral by Alembic"
+          "Azithral",
+          "Dolo 650",
+          "Paracetamol alternatives"
         ],
-        tip: "Include the complete medicine name and strength (if known)"
+        tip: "Just type the medicine name - I'll understand!"
       });
     }
 
@@ -318,13 +334,13 @@ export async function medicineAssistantController(req, res, next) {
     if (!intent?.medicine_name) {
       return res.json({
         success: false,
-        reply: "I can only provide information about medicines. Please specify a medicine name clearly.",
+        reply: "I'd love to help! Could you tell me which medicine you're asking about? You can just type the name.",
         examples: [
-          "What is the price of Paracetamol 650?",
-          "Tell me about Allegra 120mg tablet",
-          "Show alternatives to Azithral"
+          "Azithral",
+          "Dolo 650 price",
+          "Paracetamol alternatives"
         ],
-        tip: "Include the complete medicine name and strength (if known)"
+        tip: "Just type the medicine name - I'll understand!"
       });
     }
 
@@ -364,22 +380,21 @@ export async function medicineAssistantController(req, res, next) {
         .lean();
     }
 
-    // Fuzzy matching if still no results
     if (!medicines.length) {
       const similarNames = await findSimilarMedicines(cleaned || rawName);
       
       if (similarNames.length > 0) {
         return res.json({
           success: false,
-          reply: `I couldn't find "${rawName}" in the database. Did you mean one of these?`,
+          reply: `Hmm, I couldn't find "${rawName}" exactly. Did you mean one of these?`,
           suggestions: similarNames,
-          tip: "Please try again with one of the suggested medicine names"
+          tip: "Just type the correct name and I'll get you the details!"
         });
       }
     }
 
     const response = await generateResponse(intent, medicines, message);
-    response.reply += "\n\nThis information is for educational purposes only; consult a licensed healthcare professional for personalized advice.";
+    response.reply += "\n\nThis information is for educational purposes only. Please consult a licensed healthcare professional for proper diagnosis and treatment.";
 
     const result = {
       success: true,

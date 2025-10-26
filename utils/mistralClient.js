@@ -85,7 +85,7 @@ export async function getMistralJSON({
   system = '',
   temperature = 0,
   top_p = 1,
-  maxTokens = 300,
+  maxTokens = 400,
   model = 'mistral-large-latest',
   useSystemRole = false
 } = {}) {
@@ -111,17 +111,26 @@ export async function getMistralJSON({
     const jsonText = sanitizeToJSONString(raw);
 
     try {
-      return JSON.parse(jsonText);
+      const parsed = JSON.parse(jsonText);
+      if (parsed && typeof parsed === 'object') {
+        return parsed;
+      }
+      return null;
     } catch (parseErr) {
-      console.warn('JSON parse failed after sanitize; returning null to trigger fallback:', parseErr?.message);
+      if (!getMistralJSON._lastError || getMistralJSON._lastError !== parseErr.message) {
+        console.warn('JSON parse failed, using fallback heuristics');
+        getMistralJSON._lastError = parseErr.message;
+      }
       return null;
     }
   } catch (error) {
-    console.error('Mistral getMistralJSON error:', error);
+    if (error.message !== 'AI service error. Please try again later.') {
+      console.error('Mistral getMistralJSON API error:', error?.message);
+    }
     return null;
   }
 }
-// Health check for Mistral API
+
 export async function checkMistralHealth() {
   try {
     const testMessage = buildMessages({ 
@@ -150,4 +159,3 @@ export async function checkMistralHealth() {
     };
   }
 }
-export { buildMessages };
