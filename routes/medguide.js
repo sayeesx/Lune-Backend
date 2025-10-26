@@ -61,7 +61,7 @@ router.get("/medicines/search", async (req, res) => {
   }
 });
 
-// POST /assistant - AI-powered medicine assistant
-router.post("/assistant", medicineAssistant);
+// POST / - AI-powered medicine assistant (THIS IS THE CHANGE!)
+router.post("/", medicineAssistant);
 
 export default router;

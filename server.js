@@ -12,6 +12,7 @@ import medguideRoutes from "./routes/medguide.js";
 import labsenseRoutes from "./routes/labsense.js";
 import scanvisionRoutes from "./routes/scanvision.js";
 import symptomaiRoutes from "./routes/symptomai.js";
+import encyclopediaRoutes from "./routes/encyclopedia.js";
 
 // Middleware
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler.js";
@@ -83,6 +84,7 @@ app.get("/health", async (_req, res) => {
       "/api/labsense",
       "/api/scanvision",
       "/api/symptomai",
+      "/api/encyclopedia",
     ],
   });
 });
@@ -94,6 +96,7 @@ app.use("/api/medguide", medguideRoutes);
 app.use("/api/labsense", labsenseRoutes);
 app.use("/api/scanvision", scanvisionRoutes);
 app.use("/api/symptomai", symptomaiRoutes);
+app.use("/api/encyclopedia", encyclopediaRoutes);
 
 // Root endpoint
 app.get("/", (_req, res) => {
