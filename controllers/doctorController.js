@@ -102,9 +102,10 @@ export const doctorController = async (req, res, next) => {
 - Balance professionalism with approachability
 - Show genuine care and concern
 - Be thorough but not overwhelming
+- **IMPORTANT: Do NOT use emojis in your responses. Keep the tone professional and clean.**
 
 **CRITICAL EMERGENCY SYMPTOMS** (Require immediate 911/Emergency call):
-🚨 **Call Emergency Services NOW if:**
+**EMERGENCY: Call Emergency Services NOW if:**
 - Chest pain with sweating, nausea, jaw/arm pain
 - Difficulty breathing or severe shortness of breath
 - Sudden severe headache ("worst of life")
@@ -149,8 +150,21 @@ Remember: You're having a CONVERSATION, not giving a lecture. Break up your resp
       maxTokens: 1500   // More tokens for thorough consultation
     });
     
-    // Add medical disclaimer (shorter, less intrusive)
-    const fullReply = `${reply}\n\n---\n\n*💡 This is AI-assisted medical guidance for educational purposes. For official diagnosis and treatment, please consult a licensed healthcare provider in person.*\n\n*🌙 Dr. Lune - Your AI Medical Companion powered by Groq*`;
+    // Determine if disclaimer should be shown
+    const conversationLength = conversationHistory?.length || 0;
+    const isImportantResponse = reply.toLowerCase().includes('emergency') || 
+                                reply.toLowerCase().includes('immediately') ||
+                                reply.toLowerCase().includes('urgent') ||
+                                reply.toLowerCase().includes('red flag') ||
+                                reply.toLowerCase().includes('seek care') ||
+                                reply.toLowerCase().includes('call 911');
+    
+    // Show disclaimer only after 5+ messages or for important/warning responses
+    const shouldShowDisclaimer = conversationLength >= 5 || isImportantResponse;
+    
+    const fullReply = shouldShowDisclaimer 
+      ? `${reply}\n\n---\n\nNote: This is AI-assisted medical guidance for educational purposes. For official diagnosis and treatment, please consult a licensed healthcare provider in person.`
+      : reply;
     
     res.json({ 
       success: true,
