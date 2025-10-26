@@ -19,13 +19,14 @@ import { apiLimiter } from "./middleware/rateLimiter.js";
 
 // Utils
 import { checkGroqHealth } from "./utils/groqClient.js";
+import { checkMistralHealth } from "./utils/mistralClient.js";
 
 const app = express();
-const PORT = process.env.PORT || 8080;
+const PORT = Number(process.env.PORT) || 8080;
 const { MONGODB_URI } = process.env;
 
 // Security headers
-app.use(helmet()); // [web:231]
+app.use(helmet());
 
 // CORS
 app.use(
@@ -34,23 +35,30 @@ app.use(
     methods: ["GET", "POST", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
   })
-); // [web:231]
-app.options("*", cors()); // [web:231]
+);
+app.options("*", cors());
 
 // Body parsers
 app.use(express.json({ limit: "10mb" }));
-app.use(express.urlencoded({ extended: true, limit: "10mb" })); // [web:231]
+app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
 // Rate limiting on API namespace
-app.use("/api", apiLimiter); // [web:231]
+app.use("/api", apiLimiter);
 
-// Health check endpoint (Groq + Mongo)
+// Health check endpoint (Groq + Mistral + Mongo)
 app.get("/health", async (_req, res) => {
   let groqStatus = { ok: false };
   try {
     groqStatus = await checkGroqHealth();
   } catch {
     groqStatus = { ok: false, error: "groq check failed" };
+  }
+
+  let mistralStatus = { ok: false };
+  try {
+    mistralStatus = await checkMistralHealth();
+  } catch {
+    mistralStatus = { ok: false, error: "mistral check failed" };
   }
 
   const states = ["disconnected", "connected", "connecting", "disconnecting"];
@@ -61,11 +69,12 @@ app.get("/health", async (_req, res) => {
   };
 
   return res.json({
-    status: mongo.ok ? "healthy" : "degraded",
+    status: mongo.ok && (groqStatus.ok || mistralStatus.ok) ? "healthy" : "degraded",
     timestamp: new Date().toISOString(),
     service: "Lune Backend API",
     version: "1.0.0",
     groq: groqStatus,
+    mistral: mistralStatus,
     mongo,
     endpoints: [
       "/api/doctor",
@@ -76,7 +85,7 @@ app.get("/health", async (_req, res) => {
       "/api/symptomai",
     ],
   });
-}); // [web:295][web:105]
+});
 
 // API routes (mounted under /api)
 app.use("/api/doctor", doctorRoutes);
@@ -84,7 +93,7 @@ app.use("/api/rxscan", rxscanRoutes);
 app.use("/api/medguide", medguideRoutes);
 app.use("/api/labsense", labsenseRoutes);
 app.use("/api/scanvision", scanvisionRoutes);
-app.use("/api/symptomai", symptomaiRoutes); // [web:231]
+app.use("/api/symptomai", symptomaiRoutes);
 
 // Root endpoint
 app.get("/", (_req, res) => {
@@ -102,13 +111,13 @@ app.get("/", (_req, res) => {
     ],
     documentation: "/health",
   });
-}); // [web:231]
+});
 
 // 404 and global error handlers
 app.use(notFoundHandler);
-app.use(errorHandler); // [web:231]
+app.use(errorHandler);
 
-// Connection event logs (visibility during runtime)
+// Connection event logs
 mongoose.connection.on("connected", () => {
   console.log("✅ Mongoose connected:", mongoose.connection.name);
 });
@@ -120,7 +129,7 @@ mongoose.connection.on("reconnected", () => {
 });
 mongoose.connection.on("error", (err) => {
   console.error("❌ Mongoose error:", err);
-}); // [web:102]
+});
 
 // Graceful shutdown
 const shutdown = async (signal) => {
@@ -134,9 +143,9 @@ const shutdown = async (signal) => {
   }
 };
 process.on("SIGINT", () => shutdown("SIGINT"));
-process.on("SIGTERM", () => shutdown("SIGTERM")); // [web:295]
+process.on("SIGTERM", () => shutdown("SIGTERM"));
 
-// Bootstrap: await MongoDB before listening
+// Bootstrap: await MongoDB and verify AI services before listening
 (async function bootstrap() {
   if (!MONGODB_URI) {
     console.error("MONGODB_URI is not set");
@@ -144,21 +153,43 @@ process.on("SIGTERM", () => shutdown("SIGTERM")); // [web:295]
   }
 
   try {
+    // Connect to MongoDB
     await mongoose.connect(MONGODB_URI, {
       maxPoolSize: 20,
       serverSelectionTimeoutMS: 5000,
       socketTimeoutMS: 20000,
-    }); // [web:102]
+    });
 
-    // Only start HTTP server once connected
-    app.listen(PORT, () => {
+    // Verify Mistral API connection
+    console.log("🔍 Checking Mistral AI connection...");
+    const mistralHealth = await checkMistralHealth();
+    if (mistralHealth.ok) {
+      console.log("✅ Mistral AI connected");
+    } else {
+      console.warn("⚠️  Mistral AI connection failed:", mistralHealth.error);
+    }
+
+    // Start HTTP server
+    const server = app.listen(PORT, () => {
       console.log(`🚀 Lune Backend Server running on port ${PORT}`);
       console.log(`🌙 Environment: ${process.env.NODE_ENV || "development"}`);
       console.log(`📍 Health check: http://localhost:${PORT}/health`);
       console.log(`✅ Mongo connected to DB: ${mongoose.connection.name}`);
     });
+
+    server.on("error", (err) => {
+      if (err && err.code === "EADDRINUSE") {
+        console.error(
+          `❌ Port ${PORT} is already in use. Set PORT to a free port or stop the existing process using it.`
+        );
+        process.exit(1);
+      } else {
+        console.error("❌ HTTP server error:", err);
+        process.exit(1);
+      }
+    });
   } catch (err) {
-    console.error("Failed to connect to MongoDB:", err);
+    console.error("Failed to start server:", err);
     process.exit(1);
   }
 })();

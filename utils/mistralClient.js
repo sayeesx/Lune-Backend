@@ -9,8 +9,6 @@ if (!MISTRAL_API_KEY) {
 
 const client = new Mistral({ apiKey: MISTRAL_API_KEY });
 
-// Build messages while remaining compatible across SDK role handling.
-// By default, system instructions are prepended to the first user message.
 function buildMessages({ system, user, useSystemRole = false }) {
   const sys = typeof system === 'string' ? system.trim() : '';
   const usr = typeof user === 'string' ? user.trim() : '';
@@ -23,7 +21,6 @@ function buildMessages({ system, user, useSystemRole = false }) {
   return [{ role: 'user', content: (sys ? `${sys}\n\n` : '') + usr }];
 }
 
-// Simple retry with exponential backoff
 async function withRetry(fn, { retries = 2, baseDelayMs = 300 } = {}) {
   let attempt = 0;
   let lastErr;
@@ -40,7 +37,27 @@ async function withRetry(fn, { retries = 2, baseDelayMs = 300 } = {}) {
   throw lastErr;
 }
 
-// Text completion (chat) for narrative responses
+function sanitizeToJSONString(s) {
+  if (typeof s !== 'string') return '{}';
+  let t = s.trim();
+
+  const fencePattern = /``````/g;
+  t = t.replace(fencePattern, (match) => {
+    const inner = match.replace(/``````\s*/g, '');
+    return inner.trim();
+  });
+
+  if (!(t.startsWith('{') && t.endsWith('}'))) {
+    const first = t.indexOf('{');
+    const last = t.lastIndexOf('}');
+    if (first !== -1 && last !== -1 && last > first) {
+      t = t.slice(first, last + 1).trim();
+    }
+  }
+
+  return t;
+}
+
 export async function getMistralText({
   user,
   system = '',
@@ -63,7 +80,6 @@ export async function getMistralText({
   }
 }
 
-// JSON mode completion for strict extraction
 export async function getMistralJSON({
   user,
   system = '',
@@ -75,22 +91,63 @@ export async function getMistralJSON({
 } = {}) {
   try {
     const messages = buildMessages({ system, user, useSystemRole });
+    const stopSequence = String.fromCharCode(96, 96, 96);
+
     const resp = await withRetry(
-      () => client.chat.complete({
-        model,
-        messages,
-        temperature,
-        top_p,
-        maxTokens,
-        response_format: { type: 'json_object' } // JSON Mode
-      }),
+      () =>
+        client.chat.complete({
+          model,
+          messages,
+          temperature,
+          top_p,
+          maxTokens,
+          response_format: { type: 'json_object' },
+          stop: [stopSequence]
+        }),
       { retries: 2, baseDelayMs: 300 }
     );
-    const content = resp.choices?.[0]?.message?.content ?? '{}'; // stringified JSON
-    return JSON.parse(content);
+
+    const raw = resp.choices?.[0]?.message?.content ?? '{}';
+    const jsonText = sanitizeToJSONString(raw);
+
+    try {
+      return JSON.parse(jsonText);
+    } catch (parseErr) {
+      console.warn('JSON parse failed after sanitize; returning null to trigger fallback:', parseErr?.message);
+      return null;
+    }
   } catch (error) {
     console.error('Mistral getMistralJSON error:', error);
-    throw new Error('AI service error. Please try again later.');
+    return null;
   }
 }
- 
+// Health check for Mistral API
+export async function checkMistralHealth() {
+  try {
+    const testMessage = buildMessages({ 
+      system: '', 
+      user: 'test', 
+      useSystemRole: false 
+    });
+    
+    const resp = await client.chat.complete({
+      model: 'mistral-large-latest',
+      messages: testMessage,
+      maxTokens: 5,
+      temperature: 0
+    });
+    
+    return {
+      ok: true,
+      model: 'mistral-large-latest',
+      status: 'connected'
+    };
+  } catch (error) {
+    console.error('Mistral health check failed:', error?.message);
+    return {
+      ok: false,
+      error: error?.message || 'Connection failed'
+    };
+  }
+}
+export { buildMessages };
