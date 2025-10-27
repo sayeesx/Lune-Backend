@@ -4,6 +4,7 @@ import express from "express";
 import cors from "cors";
 import helmet from "helmet";
 import mongoose from "mongoose";
+import redisClient from "./lib/redis.js";
 
 // Routes
 import doctorRoutes from "./routes/doctor.js";

@@ -3,6 +3,7 @@ import express from "express";
 import dbConnect from "../lib/mongodb.js";
 import Medicine from "../models/Medicine.js";
 import { medicineAssistantController as medicineAssistant } from "../controllers/medicineAssistantController.js";
+import { cacheWithExpiry, CACHE_KEYS, buildKey } from "../lib/redis.js";
 
 const router = express.Router();
 
@@ -51,11 +52,19 @@ router.get("/medicines/search", async (req, res) => {
       });
     }
 
-    const docs = await Medicine.find(q, null, { limit: lim, sort: { name: 1 } })
-      .lean()
-      .exec();
+    // Build cache key from query params
+    const cacheKey = buildKey(CACHE_KEYS.MEDICINE_QUERY, 
+      `search:${JSON.stringify({ name, manufacturer, type, limit })}`
+    );
 
-    return res.json({ count: docs.length, data: docs });
+    const result = await cacheWithExpiry(cacheKey, async () => {
+      const docs = await Medicine.find(q, null, { limit: lim, sort: { name: 1 } })
+        .lean()
+        .exec();
+      return { count: docs.length, data: docs };
+    }, 1800); // Cache for 30 minutes
+
+    return res.json(result);
   } catch (err) {
     return res.status(500).json({ error: "Search failed", details: err.message });
   }

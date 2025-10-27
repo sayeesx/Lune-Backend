@@ -28,6 +28,7 @@
     "express-rate-limit": "^7.1.5",
     "groq-sdk": "^0.7.0",
     "helmet": "^7.1.0",
+    "ioredis": "^5.8.2",
     "mongoose": "^8.19.2",
     "node-cache": "^5.1.2"
   },
