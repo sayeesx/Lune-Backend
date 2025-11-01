@@ -1,18 +1,34 @@
-import { getGroqReply } from "../utils/groqClient.js";
+// src/controllers/doctorController.js
+import "dotenv/config";
+import Groq from "groq-sdk";
+import { createClient } from "@supabase/supabase-js";
 
-export const doctorController = async (req, res, next) => {
-  try {
-    const { message, conversationHistory } = req.body;
-    
-    if (!message || message.trim() === "") {
-      return res.status(400).json({ 
-        error: "Message is required.",
-        example: "I have been experiencing chest pain and shortness of breath for 2 days"
-      });
-    }
+// --- Environment checks ---
+const { SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, GROQ_API_KEY } = process.env;
+if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+  throw new Error("Supabase env vars missing: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY");
+}
+if (!GROQ_API_KEY) {
+  throw new Error("GROQ_API_KEY is missing");
+}
 
-    // Enhanced medical system prompt with doctor-like conversation flow
-    const systemPrompt = `You are Dr. Lune, an experienced and empathetic medical doctor conducting a virtual consultation. You have a warm, professional bedside manner and follow proper medical consultation protocols.
+// --- Initialize clients once ---
+const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+const groq = new Groq({ apiKey: GROQ_API_KEY });
+
+// --- System prompt (your original, unchanged) ---
+const systemPrompt = `You are Dr. Lune, a real clinician with a warm bedside manner.
+Reply briefly and conversationally.
+Hard rules:
+- Keep responses to 2–4 short sentences (under ~120 words).
+- Ask at most 1–2 focused follow‑up questions.
+- Prefer plain language; no bullet lists unless strictly necessary.
+- Never write long essays or multi‑section lectures.
+- If enough info is present, give a brief assessment + next step in ≤4 sentences.
+- No emojis.
+
+
+
 
 **YOUR CONSULTATION APPROACH:**
 
@@ -132,54 +148,104 @@ export const doctorController = async (req, res, next) => {
 
 Remember: You're having a CONVERSATION, not giving a lecture. Break up your response into digestible parts. Ask questions. Show empathy. Guide the patient through the consultation process just like a real doctor would in an office visit.`;
 
-    // Build conversation context if history exists
-    let conversationContext = "";
-    if (conversationHistory && Array.isArray(conversationHistory) && conversationHistory.length > 0) {
-      conversationContext = "\n\n**Previous Conversation:**\n";
-      conversationHistory.forEach((turn, index) => {
-        conversationContext += `\nPatient: ${turn.patient}\nDr. Lune: ${turn.doctor}\n`;
+// --- Controller ---
+export const doctorController = async (req, res, next) => {
+  try {
+    const { message, chat_id, model } = req.body;
+
+    if (!message || !message.trim()) {
+      return res.status(400).json({
+        error: "Message is required.",
+        example: "I have been experiencing chest pain and shortness of breath for 2 days",
       });
-      conversationContext += "\n**Current Patient Message:**\n";
+    }
+    if (!chat_id) {
+      return res.status(400).json({
+        error: "chat_id is required to maintain conversation memory",
+        hint: "Create or fetch a chat session first and pass its id",
+      });
     }
 
-    const fullMessage = conversationContext + message;
+    // 1) Save the user's new message
+    const { error: insertUserErr } = await supabase
+      .from("chat_messages")
+      .insert([{ chat_id, role: "user", content: message }]);
+    if (insertUserErr) {
+      return res.status(500).json({ error: "Failed to save user message", details: insertUserErr.message });
+    }
 
-    // Get response from Groq with higher token limit for detailed responses
-    const reply = await getGroqReply(fullMessage, systemPrompt, {
-      temperature: 0.8, // Slightly higher for more natural, conversational responses
-      maxTokens: 1500   // More tokens for thorough consultation
+    // 2) Load full conversation history in chronological order
+    const { data: history, error: historyErr } = await supabase
+      .from("chat_messages")
+      .select("role, content, created_at")
+      .eq("chat_id", chat_id)
+      .order("created_at", { ascending: true });
+    if (historyErr) {
+      return res.status(500).json({ error: "Failed to load conversation", details: historyErr.message });
+    }
+
+    // 3) Build Groq messages array with system + mapped turns
+    // Map DB role "doctor" to Groq "assistant"
+    const messages = [{ role: "system", content: systemPrompt }];
+    for (const row of history || []) {
+      const role = row.role === "doctor" ? "assistant" : row.role; // user stays user
+      messages.push({ role, content: row.content });
+    }
+
+    // 4) Call Groq chat completions with full multi-turn context
+    const completion = await groq.chat.completions.create({
+      model: model || "llama-3.3-70b-versatile",
+      messages,
+      temperature: 0.8,
+      max_tokens: 1500,
+      top_p: 0.95,
+      stream: false,
     });
-    
-    // Determine if disclaimer should be shown
-    const conversationLength = conversationHistory?.length || 0;
-    const isImportantResponse = reply.toLowerCase().includes('emergency') || 
-                                reply.toLowerCase().includes('immediately') ||
-                                reply.toLowerCase().includes('urgent') ||
-                                reply.toLowerCase().includes('red flag') ||
-                                reply.toLowerCase().includes('seek care') ||
-                                reply.toLowerCase().includes('call 911');
-    
-    // Show disclaimer only after 5+ messages or for important/warning responses
+
+    const reply = completion?.choices?.[0]?.message?.content?.trim() || "No response generated.";
+
+    // 5) Save AI reply back to Supabase as role=doctor
+    const { error: insertAiErr } = await supabase
+      .from("chat_messages")
+      .insert([{ chat_id, role: "doctor", content: reply }]);
+    if (insertAiErr) {
+      // Non-fatal: reply computed but not saved
+      return res.status(500).json({
+        error: "AI reply computed but failed to save",
+        details: insertAiErr.message,
+        reply,
+      });
+    }
+
+    // 6) Disclaimer logic
+    const conversationLength = (history?.length || 0);
+    const text = reply.toLowerCase();
+    const isImportantResponse =
+      text.includes("emergency") ||
+      text.includes("immediately") ||
+      text.includes("urgent") ||
+      text.includes("red flag") ||
+      text.includes("seek care") ||
+      text.includes("call 911");
+
     const shouldShowDisclaimer = conversationLength >= 5 || isImportantResponse;
-    
-    const fullReply = shouldShowDisclaimer 
+    const fullReply = shouldShowDisclaimer
       ? `${reply}\n\n---\n\nNote: This is AI-assisted medical guidance for educational purposes. For official diagnosis and treatment, please consult a licensed healthcare provider in person.`
       : reply;
-    
-    res.json({ 
+
+    // 7) Return response
+    return res.json({
       success: true,
       reply: fullReply,
       conversationTip: "You can continue the conversation by providing more details based on the questions asked.",
       metadata: {
-        model: "Llama 3.3 70B (Groq)",
+        model: model || "llama-3.3-70b-versatile",
         feature: "AI Doctor Consultation",
-        consultation_stage: conversationHistory?.length > 0 ? "Follow-up" : "Initial",
-        response_time: "< 2 seconds"
-      }
+        consultation_stage: conversationLength > 0 ? "Follow-up" : "Initial",
+      },
     });
-    
   } catch (err) {
     console.error("Doctor Controller Error:", err);
-    next(err);
+    return next(err);
   }
 };
