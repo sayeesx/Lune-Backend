@@ -1,11 +1,10 @@
 import { getGroqJSON, queryLabReport } from '../utils/groqClient.js';
 import LabReport from '../models/LabReport.js';
-import mongoose from 'mongoose';  // ← Add this line
+import mongoose from 'mongoose';
 
 /**
  * Analyze lab report text using Groq AI and save to MongoDB
  * POST /api/labsense/analyze
- * Body: { text: string, userId: string }
  */
 export const analyzeLabReport = async (req, res) => {
   try {
@@ -26,7 +25,6 @@ export const analyzeLabReport = async (req, res) => {
       });
     }
 
-    // Limit text size (prevent abuse)
     if (text.length > 50000) {
       return res.status(400).json({
         success: false,
@@ -34,11 +32,11 @@ export const analyzeLabReport = async (req, res) => {
       });
     }
 
-    // System prompt for medical lab analysis
+    // ✅ FIXED: Better system prompt with explicit JSON formatting
     const systemPrompt = `You are Labsense, an AI medical lab report companion.
 Analyze the provided lab report and return a structured JSON response.
 
-Your JSON response MUST have exactly these fields:
+CRITICAL: Your JSON response MUST be valid with NO trailing commas. Use this exact structure:
 {
   "summary": "A clear 2-3 sentence summary of key findings",
   "abnormalities": [
@@ -46,29 +44,26 @@ Your JSON response MUST have exactly these fields:
       "testName": "Name of the test",
       "value": "Measured value with unit",
       "normalRange": "Normal reference range",
-      "severity": "low, moderate, high, or critical"
+      "severity": "low"
     }
   ],
   "recommendations": [
     "Specific, actionable health recommendation 1",
-    "Specific, actionable health recommendation 2",
-    "Specific, actionable health recommendation 3"
+    "Specific, actionable health recommendation 2"
   ],
-  "riskLevel": "low, moderate, high, or critical"
+  "riskLevel": "low"
 }
 
-Important guidelines:
+Guidelines:
 - Be precise and factual
-- Prioritize patient safety in all recommendations
-- Include ALL abnormal findings in the abnormalities array
-- Provide 3-5 specific, actionable recommendations
-- Assess overall riskLevel based on severity of findings
-- Output in structured JSON with educational intent
-- This is not a medical diagnosis`;
+- Include ALL abnormal findings
+- Severity must be: low, moderate, high, or critical
+- riskLevel must be: low, moderate, high, or critical
+- No trailing commas anywhere in the JSON
+- This is educational, not medical diagnosis`;
 
     const userPrompt = `Analyze this lab report:\n\n${text}`;
 
-    // Build messages array
     const messages = [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userPrompt }
@@ -76,7 +71,6 @@ Important guidelines:
 
     console.log('🔵 Calling Groq AI for analysis...');
     
-    // Call Groq API with JSON mode
     const analysis = await getGroqJSON(messages, {
       model: 'llama-3.3-70b-versatile',
       temperature: 0.2,
@@ -84,7 +78,7 @@ Important guidelines:
       topP: 0.9
     });
 
-    // Validate response structure
+    // ✅ FIXED: Validate response structure
     if (!analysis || typeof analysis !== 'object') {
       return res.status(500).json({
         success: false,
@@ -92,27 +86,46 @@ Important guidelines:
       });
     }
 
+    // ✅ FIXED: Normalize and validate data
+    const validSeverities = ["low", "moderate", "high", "critical"];
+    const validRiskLevels = ["low", "moderate", "high", "critical"];
+
+    const abnormalities = (Array.isArray(analysis.abnormalities) ? analysis.abnormalities : [])
+      .filter(item => item.testName && item.value)
+      .map(item => ({
+        testName: String(item.testName).trim(),
+        value: String(item.value).trim(),
+        normalRange: String(item.normalRange || item.referenceRange || "N/A").trim(),
+        severity: validSeverities.includes(String(item.severity).toLowerCase()) 
+          ? String(item.severity).toLowerCase() 
+          : "moderate"
+      }));
+
+    const recommendations = (Array.isArray(analysis.recommendations) ? analysis.recommendations : [])
+      .map(rec => String(rec).trim())
+      .filter(rec => rec.length > 0);
+
+    const riskLevel = validRiskLevels.includes(String(analysis.riskLevel).toLowerCase())
+      ? String(analysis.riskLevel).toLowerCase()
+      : "moderate";
+
     console.log('✅ Groq analysis complete');
     console.log('🔵 Saving to MongoDB...');
 
-    // Save to MongoDB
     const labReport = new LabReport({
       userId,
       labText: text,
-      reportSummary: analysis.summary || 'Lab report analysis completed.',
-      abnormalities: Array.isArray(analysis.abnormalities) ? analysis.abnormalities : [],
-      recommendations: Array.isArray(analysis.recommendations) ? analysis.recommendations : [],
-      riskLevel: analysis.riskLevel || 'low',
-      queries: [] // Initialize empty queries array
+      reportSummary: String(analysis.summary || 'Lab report analysis completed.').trim(),
+      abnormalities,
+      recommendations,
+      riskLevel,
+      queries: []
     });
 
     await labReport.save();
     
     console.log('✅ Saved to MongoDB! Report ID:', labReport._id);
-    console.log('📊 Database:', mongoose.connection.name);
-    console.log('📁 Collection: labreports');
 
-    // Return structured response
     return res.status(200).json({
       success: true,
       data: {
@@ -128,7 +141,6 @@ Important guidelines:
   } catch (error) {
     console.error('❌ LabSense Analysis Error:', error);
 
-    // Handle specific error messages
     if (error.message === 'AI service error. Please try again later.') {
       return res.status(503).json({
         success: false,
@@ -143,7 +155,6 @@ Important guidelines:
       });
     }
 
-    // Generic error response
     return res.status(500).json({
       success: false,
       error: 'Failed to analyze lab report. Please try again.'
@@ -154,13 +165,11 @@ Important guidelines:
 /**
  * Ask questions about a previously analyzed lab report
  * POST /api/labsense/query
- * Body: { reportId: string, question: string, userId: string }
  */
 export const queryReport = async (req, res) => {
   try {
     const { reportId, question, userId } = req.body;
 
-    // Validation
     if (!reportId || typeof reportId !== 'string') {
       return res.status(400).json({
         success: false,
@@ -191,10 +200,9 @@ export const queryReport = async (req, res) => {
 
     console.log('🔍 Fetching report from MongoDB:', reportId);
 
-    // Fetch lab report from MongoDB
     const labReport = await LabReport.findOne({ 
       _id: reportId, 
-      userId // Ensure user owns this report
+      userId
     });
 
     if (!labReport) {
@@ -206,7 +214,7 @@ export const queryReport = async (req, res) => {
 
     console.log('✅ Report found');
 
-    // Check if this question was already asked (cache check)
+    // Check cache
     const cachedAnswer = labReport.findCachedAnswer(question);
     
     if (cachedAnswer) {
@@ -225,10 +233,8 @@ export const queryReport = async (req, res) => {
 
     console.log('🔵 Calling Groq AI for answer...');
 
-    // Query Groq AI with the stored lab text
     const response = await queryLabReport(labReport.labText, question);
 
-    // Validate response
     if (!response || typeof response !== 'object') {
       return res.status(500).json({
         success: false,
@@ -239,7 +245,6 @@ export const queryReport = async (req, res) => {
     console.log('✅ Groq response received');
     console.log('🔵 Caching answer in MongoDB...');
 
-    // Save the Q&A to MongoDB (cache for future)
     labReport.queries.push({
       question: question.trim(),
       answer: response.answer || 'I apologize, but I could not generate a response.',
@@ -250,7 +255,6 @@ export const queryReport = async (req, res) => {
     await labReport.save();
     console.log('✅ Answer cached');
 
-    // Return structured response
     return res.status(200).json({
       success: true,
       data: {
@@ -301,11 +305,10 @@ export const getUserReports = async (req, res) => {
       });
     }
 
-    // Fetch all reports for this user, sorted by newest first
     const reports = await LabReport.find({ userId })
       .select('_id reportSummary riskLevel timestamp abnormalities')
       .sort({ timestamp: -1 })
-      .limit(50); // Limit to last 50 reports
+      .limit(50);
 
     return res.status(200).json({
       success: true,
