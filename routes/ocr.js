@@ -1,8 +1,12 @@
 import express from 'express';
 import Tesseract from 'tesseract.js';
-import pdfParse from 'pdf-parse';
+import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
+
+// For CommonJS modules in ES6
+const require = createRequire(import.meta.url);
+const pdfParse = require('pdf-parse');
 
 const router = express.Router();
 const __filename = fileURLToPath(import.meta.url);
@@ -122,8 +126,6 @@ router.post('/extract-pdf', async (req, res) => {
     if (!extractedText || extractedText.trim().length < 100) {
       console.log('🔵 Running OCR on PDF pages...');
       
-      // For scanned PDFs, we need to convert to image first
-      // This is a simplified approach - for production, use pdf2pic or similar
       try {
         const { data: { text, confidence } } = await Tesseract.recognize(
           pdfBuffer,
