@@ -4,7 +4,6 @@ import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 
-// For CommonJS modules in ES6
 const require = createRequire(import.meta.url);
 const pdfParse = require('pdf-parse');
 
@@ -15,24 +14,61 @@ const __dirname = dirname(__filename);
 /**
  * Extract text from image using Tesseract.js
  * POST /api/ocr/extract
- * Body: { imageBase64: string, imageType: string }
  */
 router.post('/extract', async (req, res) => {
   try {
     const { imageBase64, imageType } = req.body;
 
+    // Validate input
     if (!imageBase64) {
+      console.error('❌ Missing imageBase64');
       return res.status(400).json({
         success: false,
         error: 'Image base64 is required'
       });
     }
 
+    if (typeof imageBase64 !== 'string') {
+      console.error('❌ imageBase64 is not a string:', typeof imageBase64);
+      return res.status(400).json({
+        success: false,
+        error: 'Image base64 must be a string'
+      });
+    }
+
+    // Validate base64 format
+    if (!/^[A-Za-z0-9+/=]+$/.test(imageBase64)) {
+      console.error('❌ Invalid base64 format');
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid base64 encoding'
+      });
+    }
+
     console.log('🔵 Starting OCR extraction from image...');
-    console.log('📊 Image size:', Math.round(imageBase64.length / 1024), 'KB');
+    console.log('📊 Base64 size:', Math.round(imageBase64.length / 1024), 'KB');
 
     // Convert base64 to buffer
-    const imageBuffer = Buffer.from(imageBase64, 'base64');
+    let imageBuffer;
+    try {
+      imageBuffer = Buffer.from(imageBase64, 'base64');
+    } catch (bufferErr) {
+      console.error('❌ Failed to create buffer:', bufferErr.message);
+      return res.status(400).json({
+        success: false,
+        error: 'Failed to decode base64: ' + bufferErr.message
+      });
+    }
+
+    // Validate buffer
+    if (!imageBuffer || imageBuffer.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid image buffer'
+      });
+    }
+
+    console.log('📊 Buffer size:', Math.round(imageBuffer.length / 1024), 'KB');
 
     // Run Tesseract with progress logging
     const { data: { text, confidence } } = await Tesseract.recognize(
@@ -77,6 +113,7 @@ router.post('/extract', async (req, res) => {
 
   } catch (error) {
     console.error('❌ OCR Error:', error.message);
+    console.error('Stack:', error.stack);
     return res.status(500).json({
       success: false,
       error: 'OCR extraction failed: ' + error.message
@@ -85,49 +122,75 @@ router.post('/extract', async (req, res) => {
 });
 
 /**
- * Extract text from PDF using Tesseract.js + pdf-parse
+ * Extract text from PDF
  * POST /api/ocr/extract-pdf
- * Body: { pdfBase64: string }
  */
 router.post('/extract-pdf', async (req, res) => {
   try {
     const { pdfBase64 } = req.body;
 
     if (!pdfBase64) {
+      console.error('❌ Missing pdfBase64');
       return res.status(400).json({
         success: false,
         error: 'PDF base64 is required'
       });
     }
 
+    if (typeof pdfBase64 !== 'string') {
+      console.error('❌ pdfBase64 is not a string:', typeof pdfBase64);
+      return res.status(400).json({
+        success: false,
+        error: 'PDF base64 must be a string'
+      });
+    }
+
     console.log('🔵 Starting PDF extraction...');
-    console.log('📊 PDF size:', Math.round(pdfBase64.length / 1024), 'KB');
+    console.log('📊 Base64 size:', Math.round(pdfBase64.length / 1024), 'KB');
 
     // Convert base64 to buffer
-    const pdfBuffer = Buffer.from(pdfBase64, 'base64');
+    let pdfBuffer;
+    try {
+      pdfBuffer = Buffer.from(pdfBase64, 'base64');
+    } catch (bufferErr) {
+      console.error('❌ Failed to create buffer:', bufferErr.message);
+      return res.status(400).json({
+        success: false,
+        error: 'Failed to decode base64: ' + bufferErr.message
+      });
+    }
+
+    if (!pdfBuffer || pdfBuffer.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid PDF buffer'
+      });
+    }
+
+    console.log('📊 Buffer size:', Math.round(pdfBuffer.length / 1024), 'KB');
 
     let extractedText = '';
     let method = 'text-extraction';
 
     try {
-      // First, try to extract text from searchable PDFs
       console.log('🔍 Attempting text extraction from PDF...');
       const data = await pdfParse(pdfBuffer, {
-        max: 10 // Limit to first 10 pages
+        max: 10
       });
       extractedText = data.text;
       console.log('📄 PDF text extracted:', extractedText.length, 'characters');
     } catch (pdfErr) {
-      console.log('⚠️  PDF text extraction failed, will use OCR');
+      console.log('⚠️  PDF text extraction failed:', pdfErr.message);
       method = 'ocr';
     }
 
-    // If PDF has insufficient text, use OCR on the image
+    // If insufficient text, use OCR
     if (!extractedText || extractedText.trim().length < 100) {
-      console.log('🔵 Running OCR on PDF pages...');
+      console.log('🔵 Running OCR on PDF...');
+      method = 'ocr';
       
       try {
-        const { data: { text, confidence } } = await Tesseract.recognize(
+        const { data: { text } } = await Tesseract.recognize(
           pdfBuffer,
           'eng+hin',
           {
@@ -139,7 +202,7 @@ router.post('/extract-pdf', async (req, res) => {
           }
         );
         extractedText = text;
-        console.log('📝 OCR extracted from PDF:', extractedText.length, 'characters');
+        console.log('📝 OCR extracted:', extractedText.length, 'characters');
       } catch (ocrErr) {
         console.error('OCR failed:', ocrErr.message);
         if (!extractedText) {
@@ -151,12 +214,11 @@ router.post('/extract-pdf', async (req, res) => {
     if (!extractedText || extractedText.trim().length === 0) {
       return res.status(400).json({
         success: false,
-        error: 'No text could be extracted from the PDF. Please ensure it contains readable text or is not encrypted.'
+        error: 'No text could be extracted from the PDF.'
       });
     }
 
     console.log('✅ PDF extraction complete');
-    console.log('📝 Total extracted length:', extractedText.length);
 
     // Clean up text
     const cleanedText = extractedText
@@ -177,7 +239,8 @@ router.post('/extract-pdf', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('❌ PDF OCR Error:', error.message);
+    console.error('❌ PDF Error:', error.message);
+    console.error('Stack:', error.stack);
     return res.status(500).json({
       success: false,
       error: 'PDF extraction failed: ' + error.message
@@ -186,7 +249,7 @@ router.post('/extract-pdf', async (req, res) => {
 });
 
 /**
- * Health check for OCR service
+ * Health check
  * GET /api/ocr/health
  */
 router.get('/health', (_req, res) => {
