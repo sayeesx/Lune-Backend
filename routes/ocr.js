@@ -7,19 +7,40 @@ import { fileURLToPath } from 'url';
 const router = express.Router();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// Global worker pool
+let imageWorker = null;
+let pdfWorker = null;
+
+// Initialize workers
+const initImageWorker = async () => {
+  if (!imageWorker) {
+    console.log('🔧 Initializing image worker...');
+    imageWorker = await Tesseract.createWorker();
+    console.log('✅ Image worker initialized');
+  }
+  return imageWorker;
+};
+
+const initPdfWorker = async () => {
+  if (!pdfWorker) {
+    console.log('🔧 Initializing PDF worker...');
+    pdfWorker = await Tesseract.createWorker();
+    console.log('✅ PDF worker initialized');
+  }
+  return pdfWorker;
+};
+
 // ========================================
-// IMAGE OCR ENDPOINT - FIXED
+// IMAGE OCR ENDPOINT
 // ========================================
 
 router.post('/extract', async (req, res) => {
-  let worker = null;
   let tempImagePath = null;
 
   try {
     const { imageBase64 } = req.body;
 
     if (!imageBase64) {
-      console.error('❌ No image provided');
       return res.status(400).json({
         success: false,
         error: 'No image provided',
@@ -30,20 +51,17 @@ router.post('/extract', async (req, res) => {
 
     // Validate base64
     if (!/^[A-Za-z0-9+/=]+$/.test(imageBase64)) {
-      console.error('❌ Invalid base64 format');
       return res.status(400).json({
         success: false,
         error: 'Invalid base64 format',
       });
     }
 
-    // Decode base64 to buffer
+    // Decode base64
     let imageBuffer;
     try {
       imageBuffer = Buffer.from(imageBase64, 'base64');
-      console.log('✅ Base64 decoded');
     } catch (e) {
-      console.error('❌ Failed to decode base64:', e.message);
       return res.status(400).json({
         success: false,
         error: 'Failed to decode base64',
@@ -51,96 +69,39 @@ router.post('/extract', async (req, res) => {
     }
 
     if (imageBuffer.length === 0) {
-      console.error('❌ Empty buffer');
       return res.status(400).json({
         success: false,
         error: 'Empty image buffer',
       });
     }
 
-    // Create temporary directory
+    // Create temp directory
     const tempDir = path.join(__dirname, '../../temp');
-    try {
-      if (!fs.existsSync(tempDir)) {
-        fs.mkdirSync(tempDir, { recursive: true });
-      }
-    } catch (e) {
-      console.error('❌ Failed to create temp dir:', e.message);
-      return res.status(500).json({
-        success: false,
-        error: 'Failed to create temp directory',
-      });
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
     }
 
     tempImagePath = path.join(tempDir, `img_${Date.now()}.jpg`);
-    
-    try {
-      await fs.promises.writeFile(tempImagePath, imageBuffer);
-      console.log('✅ Image saved');
-    } catch (e) {
-      console.error('❌ Failed to write image file:', e.message);
-      return res.status(500).json({
-        success: false,
-        error: 'Failed to save image file',
-      });
-    }
+    await fs.promises.writeFile(tempImagePath, imageBuffer);
+    console.log('✅ Image saved');
 
-    // Create Tesseract worker - NO LOGGER FUNCTION
-    console.log('🔧 Creating Tesseract worker...');
-    try {
-      worker = await Tesseract.createWorker();
-      console.log('✅ Worker created');
-    } catch (e) {
-      console.error('❌ Failed to create worker:', e.message);
-      return res.status(500).json({
-        success: false,
-        error: 'Failed to create OCR worker',
-      });
-    }
+    // Get or initialize worker
+    const worker = await initImageWorker();
 
     // Recognize text
-    console.log('🔍 Starting text recognition...');
-    let result;
-    try {
-      result = await worker.recognize(tempImagePath);
-      console.log('✅ Recognition completed');
-    } catch (e) {
-      console.error('❌ Recognition failed:', e.message);
-      return res.status(500).json({
-        success: false,
-        error: 'Recognition failed',
-      });
-    }
-
+    console.log('🔍 Starting OCR...');
+    const result = await worker.recognize(tempImagePath);
     const text = result.data.text || '';
-    console.log('✅ Text extracted, length:', text.length);
 
-    // Cleanup
-    try {
-      if (tempImagePath && fs.existsSync(tempImagePath)) {
-        await fs.promises.unlink(tempImagePath);
-        console.log('✅ Temp file deleted');
-      }
-    } catch (e) {
-      console.warn('⚠️  Failed to delete temp file');
-    }
-
-    try {
-      await worker.terminate();
-      console.log('✅ Worker terminated');
-    } catch (e) {
-      console.warn('⚠️  Failed to terminate worker');
-    }
+    console.log('✅ OCR done, text length:', text.length);
 
     if (!text.trim()) {
-      console.error('❌ No text detected');
       return res.status(400).json({
         success: false,
         error: 'No text detected in image',
       });
     }
 
-    console.log('✅ Sending success response');
     res.json({
       success: true,
       data: {
@@ -149,45 +110,35 @@ router.post('/extract', async (req, res) => {
       },
     });
   } catch (error) {
-    console.error('❌ IMAGE OCR ERROR:', error.message);
-
-    // Cleanup on error
-    try {
-      if (tempImagePath && fs.existsSync(tempImagePath)) {
-        await fs.promises.unlink(tempImagePath);
-      }
-    } catch (e) {
-      console.warn('Cleanup failed');
-    }
-
-    if (worker) {
-      try {
-        await worker.terminate();
-      } catch (e) {
-        console.warn('Worker termination error');
-      }
-    }
+    console.error('❌ Image OCR Error:', error.message);
 
     res.status(500).json({
       success: false,
-      error: 'Image OCR extraction failed',
+      error: error.message || 'Image OCR failed',
     });
+  } finally {
+    // Cleanup temp file
+    if (tempImagePath && fs.existsSync(tempImagePath)) {
+      try {
+        await fs.promises.unlink(tempImagePath);
+      } catch (e) {
+        console.warn('Failed to delete temp file');
+      }
+    }
   }
 });
 
 // ========================================
-// PDF OCR ENDPOINT - FIXED
+// PDF OCR ENDPOINT
 // ========================================
 
 router.post('/extract-pdf', async (req, res) => {
-  let worker = null;
   let tempPdfPath = null;
 
   try {
     const { pdfBase64 } = req.body;
 
     if (!pdfBase64) {
-      console.error('❌ No PDF provided');
       return res.status(400).json({
         success: false,
         error: 'No PDF provided',
@@ -198,20 +149,17 @@ router.post('/extract-pdf', async (req, res) => {
 
     // Validate base64
     if (!/^[A-Za-z0-9+/=]+$/.test(pdfBase64)) {
-      console.error('❌ Invalid base64 format');
       return res.status(400).json({
         success: false,
         error: 'Invalid base64 format',
       });
     }
 
-    // Decode base64 to buffer
+    // Decode base64
     let pdfBuffer;
     try {
       pdfBuffer = Buffer.from(pdfBase64, 'base64');
-      console.log('✅ Base64 decoded');
     } catch (e) {
-      console.error('❌ Failed to decode base64:', e.message);
       return res.status(400).json({
         success: false,
         error: 'Failed to decode base64',
@@ -223,7 +171,6 @@ router.post('/extract-pdf', async (req, res) => {
     console.log(`📊 PDF size: ${fileSizeMB}MB`);
 
     if (pdfBuffer.length > 50 * 1024 * 1024) {
-      console.error('❌ PDF too large');
       return res.status(400).json({
         success: false,
         error: 'PDF file too large (max 50MB)',
@@ -232,88 +179,31 @@ router.post('/extract-pdf', async (req, res) => {
 
     // Create temp directory
     const tempDir = path.join(__dirname, '../../temp');
-    try {
-      if (!fs.existsSync(tempDir)) {
-        fs.mkdirSync(tempDir, { recursive: true });
-      }
-    } catch (e) {
-      console.error('❌ Failed to create temp dir:', e.message);
-      return res.status(500).json({
-        success: false,
-        error: 'Failed to create temp directory',
-      });
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
     }
 
     tempPdfPath = path.join(tempDir, `pdf_${Date.now()}.pdf`);
-    
-    // Save PDF to file
-    try {
-      await fs.promises.writeFile(tempPdfPath, pdfBuffer);
-      console.log('✅ PDF saved');
-    } catch (e) {
-      console.error('❌ Failed to write PDF file:', e.message);
-      return res.status(500).json({
-        success: false,
-        error: 'Failed to save PDF file',
-      });
-    }
+    await fs.promises.writeFile(tempPdfPath, pdfBuffer);
+    console.log('✅ PDF saved');
 
-    // Create Tesseract worker - NO LOGGER FUNCTION
-    console.log('🔧 Creating Tesseract worker for PDF...');
-    try {
-      worker = await Tesseract.createWorker();
-      console.log('✅ Worker created');
-    } catch (e) {
-      console.error('❌ Failed to create worker:', e.message);
-      return res.status(500).json({
-        success: false,
-        error: 'Failed to create OCR worker',
-      });
-    }
+    // Get or initialize worker
+    const worker = await initPdfWorker();
 
     // Process PDF
     console.log('🔍 Starting PDF OCR...');
-    let result;
-    try {
-      result = await worker.recognize(tempPdfPath);
-      console.log('✅ PDF recognition completed');
-    } catch (e) {
-      console.error('❌ PDF recognition failed:', e.message);
-      return res.status(500).json({
-        success: false,
-        error: 'PDF recognition failed',
-      });
-    }
-
+    const result = await worker.recognize(tempPdfPath);
     const text = result.data.text || '';
-    console.log('✅ Text extracted from PDF, length:', text.length);
 
-    // Cleanup
-    try {
-      if (tempPdfPath && fs.existsSync(tempPdfPath)) {
-        await fs.promises.unlink(tempPdfPath);
-        console.log('✅ Temp PDF deleted');
-      }
-    } catch (e) {
-      console.warn('⚠️  Failed to delete temp file');
-    }
-
-    try {
-      await worker.terminate();
-      console.log('✅ Worker terminated');
-    } catch (e) {
-      console.warn('⚠️  Failed to terminate worker');
-    }
+    console.log('✅ PDF OCR done, text length:', text.length);
 
     if (!text.trim()) {
-      console.error('❌ No text extracted from PDF');
       return res.status(400).json({
         success: false,
         error: 'No text extracted from PDF',
       });
     }
 
-    console.log('✅ Sending success response');
     res.json({
       success: true,
       data: {
@@ -322,38 +212,38 @@ router.post('/extract-pdf', async (req, res) => {
       },
     });
   } catch (error) {
-    console.error('❌ PDF OCR ERROR:', error.message);
-
-    // Cleanup on error
-    try {
-      if (tempPdfPath && fs.existsSync(tempPdfPath)) {
-        await fs.promises.unlink(tempPdfPath);
-      }
-    } catch (e) {
-      console.warn('Cleanup failed');
-    }
-
-    if (worker) {
-      try {
-        await worker.terminate();
-      } catch (e) {
-        console.warn('Worker termination error');
-      }
-    }
+    console.error('❌ PDF OCR Error:', error.message);
 
     res.status(500).json({
       success: false,
-      error: 'PDF extraction failed',
+      error: error.message || 'PDF extraction failed',
     });
+  } finally {
+    // Cleanup temp file
+    if (tempPdfPath && fs.existsSync(tempPdfPath)) {
+      try {
+        await fs.promises.unlink(tempPdfPath);
+      } catch (e) {
+        console.warn('Failed to delete temp file');
+      }
+    }
   }
 });
 
-// Health check for OCR
+// Health check
 router.get('/health', (req, res) => {
   res.json({ 
     success: true, 
     message: 'OCR routes healthy',
   });
+});
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  console.log('🛑 Shutting down OCR workers...');
+  if (imageWorker) await imageWorker.terminate();
+  if (pdfWorker) await pdfWorker.terminate();
+  process.exit(0);
 });
 
 export default router;
