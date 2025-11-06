@@ -1,4 +1,3 @@
-// src/server.js
 import "dotenv/config.js";
 import express from "express";
 import cors from "cors";
@@ -11,6 +10,7 @@ import doctorRoutes from "./routes/doctor.js";
 import rxscanRoutes from "./routes/rxscan.js";
 import medguideRoutes from "./routes/medguide.js";
 import labsenseRoutes from "./routes/labsense.js";
+import ocrRoutes from "./routes/ocr.js";
 import scanvisionRoutes from "./routes/scanvision.js";
 import symptomaiRoutes from "./routes/symptomai.js";
 import encyclopediaRoutes from "./routes/encyclopedia.js";
@@ -40,9 +40,9 @@ app.use(
 );
 app.options("*", cors());
 
-// Body parsers
-app.use(express.json({ limit: "10mb" }));
-app.use(express.urlencoded({ extended: true, limit: "10mb" }));
+// Body parsers - Increased limit for OCR base64 images
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
 // Rate limiting on API namespace
 app.use("/api", apiLimiter);
@@ -83,6 +83,7 @@ app.get("/health", async (_req, res) => {
       "/api/rxscan",
       "/api/medguide",
       "/api/labsense",
+      "/api/ocr",
       "/api/scanvision",
       "/api/symptomai",
       "/api/encyclopedia",
@@ -95,6 +96,7 @@ app.use("/api/doctor", doctorRoutes);
 app.use("/api/rxscan", rxscanRoutes);
 app.use("/api/medguide", medguideRoutes);
 app.use("/api/labsense", labsenseRoutes);
+app.use("/api/ocr", ocrRoutes);
 app.use("/api/scanvision", scanvisionRoutes);
 app.use("/api/symptomai", symptomaiRoutes);
 app.use("/api/encyclopedia", encyclopediaRoutes);
@@ -110,6 +112,7 @@ app.get("/", (_req, res) => {
       "Rx Scan",
       "MedGuide",
       "LabSense",
+      "OCR Text Extraction",
       "ScanVision (Coming Soon)",
       "SymptomAI",
     ],
@@ -164,7 +167,15 @@ process.on("SIGTERM", () => shutdown("SIGTERM"));
       socketTimeoutMS: 20000,
     });
 
-    // Verify Mistral API connection
+    console.log("🔍 Checking Groq AI connection...");
+    const groqHealth = await checkGroqHealth();
+    if (groqHealth.ok) {
+      console.log("✅ Groq AI connected");
+    } else {
+      console.warn("⚠️  Groq AI connection failed:", groqHealth.error);
+    }
+
+    // Verify Mistral API connection (if using)
     console.log("🔍 Checking Mistral AI connection...");
     const mistralHealth = await checkMistralHealth();
     if (mistralHealth.ok) {

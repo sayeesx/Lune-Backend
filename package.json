@@ -31,7 +31,9 @@
     "helmet": "^7.1.0",
     "ioredis": "^5.8.2",
     "mongoose": "^8.19.2",
-    "node-cache": "^5.1.2"
+    "node-cache": "^5.1.2",
+    "pdf-parse": "^2.4.5",
+    "tesseract.js": "^6.0.1"
   },
   "engines": {
     "node": ">=18.0.0"
