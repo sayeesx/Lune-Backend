@@ -29,7 +29,7 @@ router.post('/extract', async (req, res) => {
     // Decode base64 to buffer
     const imageBuffer = Buffer.from(imageBase64, 'base64');
 
-    // Create temporary file
+    // Create temporary directory
     const tempDir = path.join(__dirname, '../temp');
     if (!fs.existsSync(tempDir)) {
       fs.mkdirSync(tempDir, { recursive: true });
@@ -45,18 +45,15 @@ router.post('/extract', async (req, res) => {
       logger: (m) => {
         if (m.status === 'recognizing text') {
           const progress = Math.round(m.progress * 100);
-          console.log(`📊 OCR Progress: ${progress}%`);
+          if (progress % 20 === 0) {
+            console.log(`OCR Progress: ${progress}%`);
+          }
         }
       },
     });
 
-    // Recognize text with timeout
-    const recognizePromise = worker.recognize(tempImagePath);
-    const timeoutPromise = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error('OCR timeout after 60s')), 60000)
-    );
-
-    const result = await Promise.race([recognizePromise, timeoutPromise]);
+    // Recognize text
+    const result = await worker.recognize(tempImagePath);
     const text = result.data.text || '';
 
     console.log('✅ OCR completed, text length:', text.length);
@@ -76,20 +73,21 @@ router.post('/extract', async (req, res) => {
       success: true,
       data: {
         text: text.trim(),
-        confidence: result.data.confidence || 0.85,
+        confidence: 0.85,
       },
     });
   } catch (error) {
-    console.error('❌ Image OCR Error:', error);
+    console.error('❌ Image OCR Error:', error.message);
 
     if (worker) {
       try {
         await worker.terminate();
       } catch (e) {
-        console.error('Worker termination error:', e);
+        console.error('Worker termination error:', e.message);
       }
     }
 
+    // Don't crash - return error response
     res.status(500).json({
       success: false,
       error: error.message || 'Image OCR extraction failed',
@@ -98,7 +96,7 @@ router.post('/extract', async (req, res) => {
 });
 
 // ========================================
-// PDF OCR ENDPOINT - Simple Text Extraction
+// PDF OCR ENDPOINT - SIMPLIFIED
 // ========================================
 
 router.post('/extract-pdf', async (req, res) => {
@@ -130,28 +128,33 @@ router.post('/extract-pdf', async (req, res) => {
       });
     }
 
-    // Save PDF temporarily
+    // Create temp directory
     const tempDir = path.join(__dirname, '../temp');
     if (!fs.existsSync(tempDir)) {
       fs.mkdirSync(tempDir, { recursive: true });
     }
 
     const tempPdfPath = path.join(tempDir, `pdf_${Date.now()}.pdf`);
+    
+    // Save PDF to file
     await fs.promises.writeFile(tempPdfPath, pdfBuffer);
+    console.log('✅ PDF saved to temp file');
 
-    console.log('📖 PDF saved, attempting OCR on all pages...');
-
-    // Create Tesseract worker for PDF OCR
+    // Create Tesseract worker
     worker = await Tesseract.createWorker({
       logger: (m) => {
         if (m.status === 'recognizing text') {
-          console.log(`OCR: ${Math.round(m.progress * 100)}%`);
+          const progress = Math.round(m.progress * 100);
+          if (progress % 20 === 0) {
+            console.log(`PDF OCR Progress: ${progress}%`);
+          }
         }
       },
     });
 
-    // Recognize the entire PDF (Tesseract can handle multi-page)
-    console.log('🔍 Running OCR on PDF...');
+    console.log('🔍 Starting OCR on PDF...');
+    
+    // Process PDF
     const result = await worker.recognize(tempPdfPath);
     const text = result.data.text || '';
 
@@ -168,26 +171,25 @@ router.post('/extract-pdf', async (req, res) => {
       });
     }
 
-    console.log('✅ PDF extraction successful');
-
     res.json({
       success: true,
       data: {
         text: text.trim(),
-        confidence: result.data.confidence || 0.85,
+        confidence: 0.85,
       },
     });
   } catch (error) {
-    console.error('❌ PDF Error:', error);
+    console.error('❌ PDF OCR Error:', error.message);
 
     if (worker) {
       try {
         await worker.terminate();
       } catch (e) {
-        console.error('Worker termination error:', e);
+        console.error('Worker termination error:', e.message);
       }
     }
 
+    // IMPORTANT: Always return a response, never crash
     res.status(500).json({
       success: false,
       error: error.message || 'PDF extraction failed',
