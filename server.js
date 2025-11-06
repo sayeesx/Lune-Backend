@@ -5,6 +5,7 @@ import helmet from "helmet";
 import mongoose from "mongoose";
 import redisClient from "./lib/redis.js";
 
+
 // Routes
 import doctorRoutes from "./routes/doctor.js";
 import rxscanRoutes from "./routes/rxscan.js";
@@ -15,20 +16,29 @@ import scanvisionRoutes from "./routes/scanvision.js";
 import symptomaiRoutes from "./routes/symptomai.js";
 import encyclopediaRoutes from "./routes/encyclopedia.js";
 
+
 // Middleware
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler.js";
 import { apiLimiter } from "./middleware/rateLimiter.js";
+
 
 // Utils
 import { checkGroqHealth } from "./utils/groqClient.js";
 import { checkMistralHealth } from "./utils/mistralClient.js";
 
+
 const app = express();
 const PORT = Number(process.env.PORT) || 8080;
 const { MONGODB_URI } = process.env;
 
+
+// ✅ FIX: Trust proxy for Render (fixes X-Forwarded-For header)
+app.set('trust proxy', 1);
+
+
 // Security headers
 app.use(helmet());
+
 
 // CORS
 app.use(
@@ -40,12 +50,15 @@ app.use(
 );
 app.options("*", cors());
 
+
 // Body parsers - Increased limit for OCR base64 images
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
+
 // Rate limiting on API namespace
 app.use("/api", apiLimiter);
+
 
 // Health check endpoint (Groq + Mistral + Mongo)
 app.get("/health", async (_req, res) => {
@@ -56,6 +69,7 @@ app.get("/health", async (_req, res) => {
     groqStatus = { ok: false, error: "groq check failed" };
   }
 
+
   let mistralStatus = { ok: false };
   try {
     mistralStatus = await checkMistralHealth();
@@ -63,12 +77,14 @@ app.get("/health", async (_req, res) => {
     mistralStatus = { ok: false, error: "mistral check failed" };
   }
 
+
   const states = ["disconnected", "connected", "connecting", "disconnecting"];
   const mongo = {
     ok: mongoose.connection.readyState === 1,
     state: states[mongoose.connection.readyState] || String(mongoose.connection.readyState),
     db: mongoose.connection.name || null,
   };
+
 
   return res.json({
     status: mongo.ok && (groqStatus.ok || mistralStatus.ok) ? "healthy" : "degraded",
@@ -91,6 +107,7 @@ app.get("/health", async (_req, res) => {
   });
 });
 
+
 // API routes (mounted under /api)
 app.use("/api/doctor", doctorRoutes);
 app.use("/api/rxscan", rxscanRoutes);
@@ -100,6 +117,7 @@ app.use("/api/ocr", ocrRoutes);
 app.use("/api/scanvision", scanvisionRoutes);
 app.use("/api/symptomai", symptomaiRoutes);
 app.use("/api/encyclopedia", encyclopediaRoutes);
+
 
 // Root endpoint
 app.get("/", (_req, res) => {
@@ -120,9 +138,11 @@ app.get("/", (_req, res) => {
   });
 });
 
+
 // 404 and global error handlers
 app.use(notFoundHandler);
 app.use(errorHandler);
+
 
 // Connection event logs
 mongoose.connection.on("connected", () => {
@@ -138,6 +158,7 @@ mongoose.connection.on("error", (err) => {
   console.error("❌ Mongoose error:", err);
 });
 
+
 // Graceful shutdown
 const shutdown = async (signal) => {
   try {
@@ -152,20 +173,25 @@ const shutdown = async (signal) => {
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 
+
 // Bootstrap: await MongoDB and verify AI services before listening
 (async function bootstrap() {
   if (!MONGODB_URI) {
-    console.error("MONGODB_URI is not set");
+    console.error("❌ MONGODB_URI is not set");
     process.exit(1);
   }
 
+
   try {
     // Connect to MongoDB
+    console.log("🔌 Connecting to MongoDB...");
     await mongoose.connect(MONGODB_URI, {
       maxPoolSize: 20,
       serverSelectionTimeoutMS: 5000,
       socketTimeoutMS: 20000,
     });
+    console.log("✅ Connected to Upstash Redis");
+
 
     console.log("🔍 Checking Groq AI connection...");
     const groqHealth = await checkGroqHealth();
@@ -174,6 +200,7 @@ process.on("SIGTERM", () => shutdown("SIGTERM"));
     } else {
       console.warn("⚠️  Groq AI connection failed:", groqHealth.error);
     }
+
 
     // Verify Mistral API connection (if using)
     console.log("🔍 Checking Mistral AI connection...");
@@ -184,6 +211,7 @@ process.on("SIGTERM", () => shutdown("SIGTERM"));
       console.warn("⚠️  Mistral AI connection failed:", mistralHealth.error);
     }
 
+
     // Start HTTP server
     const server = app.listen(PORT, () => {
       console.log(`🚀 Lune Backend Server running on port ${PORT}`);
@@ -191,6 +219,7 @@ process.on("SIGTERM", () => shutdown("SIGTERM"));
       console.log(`📍 Health check: http://localhost:${PORT}/health`);
       console.log(`✅ Mongo connected to DB: ${mongoose.connection.name}`);
     });
+
 
     server.on("error", (err) => {
       if (err && err.code === "EADDRINUSE") {
@@ -204,7 +233,7 @@ process.on("SIGTERM", () => shutdown("SIGTERM"));
       }
     });
   } catch (err) {
-    console.error("Failed to start server:", err);
+    console.error("❌ Failed to start server:", err);
     process.exit(1);
   }
 })();
