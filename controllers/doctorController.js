@@ -27,9 +27,6 @@ Hard rules:
 - If enough info is present, give a brief assessment + next step in ≤4 sentences.
 - No emojis.
 
-
-
-
 **YOUR CONSULTATION APPROACH:**
 
 1. **GREETING & INITIAL ASSESSMENT** (First interaction)
@@ -152,6 +149,9 @@ Remember: You're having a CONVERSATION, not giving a lecture. Break up your resp
 export const doctorController = async (req, res, next) => {
   try {
     const { message, chat_id, model } = req.body;
+    
+    // req.user is now available from auth middleware
+    const userId = req.user.id;
 
     if (!message || !message.trim()) {
       return res.status(400).json({
@@ -159,6 +159,7 @@ export const doctorController = async (req, res, next) => {
         example: "I have been experiencing chest pain and shortness of breath for 2 days",
       });
     }
+    
     if (!chat_id) {
       return res.status(400).json({
         error: "chat_id is required to maintain conversation memory",
@@ -166,33 +167,80 @@ export const doctorController = async (req, res, next) => {
       });
     }
 
-    // 1) Save the user's new message
-    const { error: insertUserErr } = await supabase
-      .from("chat_messages")
-      .insert([{ chat_id, role: "user", content: message }]);
-    if (insertUserErr) {
-      return res.status(500).json({ error: "Failed to save user message", details: insertUserErr.message });
+    // Verify chat belongs to authenticated user (security check)
+    const { data: chatExists, error: chatCheckErr } = await supabase
+      .from("chat_history")
+      .select("id, user_id")
+      .eq("id", chat_id)
+      .single();
+
+    // If chat doesn't exist, create it for this user
+    if (!chatExists) {
+      const { error: createChatErr } = await supabase
+        .from("chat_history")
+        .insert([{
+          id: chat_id,
+          user_id: userId,
+          title: message.substring(0, 50),
+          last_message: message.substring(0, 200),
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }]);
+      
+      if (createChatErr) {
+        return res.status(500).json({ 
+          error: "Failed to create chat session",
+          details: createChatErr.message 
+        });
+      }
+    } else if (chatExists.user_id !== userId) {
+      // Security: prevent access to other users' chats
+      return res.status(403).json({ 
+        error: "Access denied",
+        message: "You don't have permission to access this chat" 
+      });
     }
 
-    // 2) Load full conversation history in chronological order
+    // 1) Save user message with user_id
+    const { error: insertUserErr } = await supabase
+      .from("chat_messages")
+      .insert([{ 
+        chat_id, 
+        user_id: userId, // Link message to user
+        role: "user", 
+        content: message 
+      }]);
+      
+    if (insertUserErr) {
+      return res.status(500).json({ 
+        error: "Failed to save user message", 
+        details: insertUserErr.message 
+      });
+    }
+
+    // 2) Load conversation history for this chat
     const { data: history, error: historyErr } = await supabase
       .from("chat_messages")
       .select("role, content, created_at")
       .eq("chat_id", chat_id)
+      .eq("user_id", userId) // Only fetch this user's messages
       .order("created_at", { ascending: true });
+      
     if (historyErr) {
-      return res.status(500).json({ error: "Failed to load conversation", details: historyErr.message });
+      return res.status(500).json({ 
+        error: "Failed to load conversation", 
+        details: historyErr.message 
+      });
     }
 
-    // 3) Build Groq messages array with system + mapped turns
-    // Map DB role "doctor" to Groq "assistant"
+    // 3) Build Groq messages with system prompt
     const messages = [{ role: "system", content: systemPrompt }];
     for (const row of history || []) {
-      const role = row.role === "doctor" ? "assistant" : row.role; // user stays user
+      const role = row.role === "doctor" ? "assistant" : row.role;
       messages.push({ role, content: row.content });
     }
 
-    // 4) Call Groq chat completions with full multi-turn context
+    // 4) Call Groq API
     const completion = await groq.chat.completions.create({
       model: model || "llama-3.3-70b-versatile",
       messages,
@@ -204,12 +252,17 @@ export const doctorController = async (req, res, next) => {
 
     const reply = completion?.choices?.[0]?.message?.content?.trim() || "No response generated.";
 
-    // 5) Save AI reply back to Supabase as role=doctor
+    // 5) Save AI reply with user_id
     const { error: insertAiErr } = await supabase
       .from("chat_messages")
-      .insert([{ chat_id, role: "doctor", content: reply }]);
+      .insert([{ 
+        chat_id, 
+        user_id: userId, // Link AI response to user
+        role: "doctor", 
+        content: reply 
+      }]);
+      
     if (insertAiErr) {
-      // Non-fatal: reply computed but not saved
       return res.status(500).json({
         error: "AI reply computed but failed to save",
         details: insertAiErr.message,
@@ -217,7 +270,17 @@ export const doctorController = async (req, res, next) => {
       });
     }
 
-    // 6) Disclaimer logic
+    // 6) Update chat_history last_message and timestamp
+    await supabase
+      .from("chat_history")
+      .update({
+        last_message: reply.substring(0, 200),
+        updated_at: new Date().toISOString()
+      })
+      .eq("id", chat_id)
+      .eq("user_id", userId);
+
+    // 7) Add disclaimer if needed
     const conversationLength = (history?.length || 0);
     const text = reply.toLowerCase();
     const isImportantResponse =
@@ -233,7 +296,6 @@ export const doctorController = async (req, res, next) => {
       ? `${reply}\n\n---\n\nNote: This is AI-assisted medical guidance for educational purposes. For official diagnosis and treatment, please consult a licensed healthcare provider in person.`
       : reply;
 
-    // 7) Return response
     return res.json({
       success: true,
       reply: fullReply,
