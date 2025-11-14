@@ -203,10 +203,7 @@ export const doctorController = async (req, res, next) => {
     const userId = req.user.id;
     
     // Extract username from email if not provided
-    const patientName = username || req.user.email?.split("@")
-      ?.split(/[._]/)
-      .map((p) => p.charAt(0).toUpperCase() + p.slice(1))
-      .join(" ") || "User";
+    const patientName = username || req.user.email?.split("@")?.split(/[._]/).map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(" ") || "User";
 
     if (!message || !message.trim()) {
       return res.status(400).json({
