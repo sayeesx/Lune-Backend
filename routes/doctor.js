@@ -1,4 +1,3 @@
-// src/routes/doctor.js
 import express from "express";
 import { doctorController } from "../controllers/doctorController.js";
 import { authenticateUser } from "../src/middleware/authMiddleware.js";

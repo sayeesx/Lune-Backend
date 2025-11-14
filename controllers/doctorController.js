@@ -34,18 +34,33 @@ const buildPatientContext = (profile, privacySettings) => {
     if (profile.location) {
       parts.push(`Location: ${profile.location}`);
     }
-    if (profile.health_goals && profile.health_goals.trim()) {
-      parts.push(`Health Goals: ${profile.health_goals}`);
+    if (profile.health_goals) {
+      const goals = typeof profile.health_goals === 'string' 
+        ? profile.health_goals 
+        : JSON.stringify(profile.health_goals);
+      if (goals.trim() && goals !== '[]' && goals !== '{}') {
+        parts.push(`Health Goals: ${goals}`);
+      }
     }
   }
   
   // Medical data - only if medical_data_access is enabled
   if (privacySettings.medical_data_access) {
-    if (profile.medical_history && profile.medical_history.trim()) {
-      parts.push(`Medical History: ${profile.medical_history}`);
+    if (profile.medical_history) {
+      const history = typeof profile.medical_history === 'string' 
+        ? profile.medical_history 
+        : JSON.stringify(profile.medical_history);
+      if (history.trim() && history !== '[]' && history !== '{}') {
+        parts.push(`Medical History: ${history}`);
+      }
     }
-    if (profile.current_medications && profile.current_medications.trim()) {
-      parts.push(`Current Medications: ${profile.current_medications}`);
+    if (profile.current_medications) {
+      const meds = typeof profile.current_medications === 'string' 
+        ? profile.current_medications 
+        : JSON.stringify(profile.current_medications);
+      if (meds.trim() && meds !== '[]' && meds !== '{}') {
+        parts.push(`Current Medications: ${meds}`);
+      }
     }
     if (profile.allergies && profile.allergies.trim()) {
       parts.push(`Known Allergies: ${profile.allergies}`);
@@ -188,7 +203,7 @@ export const doctorController = async (req, res, next) => {
     const userId = req.user.id;
     
     // Extract username from email if not provided
-    const patientName = username || req.user.email?.split("@")[0]
+    const patientName = username || req.user.email?.split("@")
       ?.split(/[._]/)
       .map((p) => p.charAt(0).toUpperCase() + p.slice(1))
       .join(" ") || "User";
@@ -207,7 +222,7 @@ export const doctorController = async (req, res, next) => {
       });
     }
 
-    // Fetch user profile data with privacy settings
+    // Fetch user profile data with privacy settings (check both JSONB and boolean columns)
     let userProfile = null;
     let privacySettings = {
       medical_data_access: false,
@@ -219,17 +234,55 @@ export const doctorController = async (req, res, next) => {
     try {
       const { data: profileData, error: profileError } = await supabase
         .from("profiles")
-        .select("full_name, age, gender, location, health_goals, current_medications, medical_history, allergies, medical_data_access, personalized_recommendations, data_analytics, research_data_sharing")
+        .select(`
+          full_name, 
+          age, 
+          gender, 
+          location, 
+          health_goals, 
+          current_medications, 
+          medical_history, 
+          allergies, 
+          privacy_settings,
+          medical_data_access,
+          personalized_recommendations,
+          data_analytics,
+          research_data_sharing
+        `)
         .eq("id", userId)
         .single();
       
       if (!profileError && profileData) {
+        // Check both boolean columns AND JSONB privacy_settings
+        const ps = profileData.privacy_settings || {};
+        
         privacySettings = {
-          medical_data_access: profileData.medical_data_access || false,
-          personalized_recommendations: profileData.personalized_recommendations || false,
-          data_analytics: profileData.data_analytics || false,
-          research_data_sharing: profileData.research_data_sharing || false,
+          // Priority: boolean column > JSONB snake_case > JSONB camelCase > false
+          medical_data_access: 
+            profileData.medical_data_access ?? 
+            ps.medical_data_access ?? 
+            ps.medicaldataaccess ?? 
+            false,
+          
+          personalized_recommendations: 
+            profileData.personalized_recommendations ?? 
+            ps.personalized_recommendations ?? 
+            ps.personalizedrecommendations ?? 
+            false,
+          
+          data_analytics: 
+            profileData.data_analytics ?? 
+            ps.data_analytics ?? 
+            ps.dataanalytics ?? 
+            false,
+          
+          research_data_sharing: 
+            profileData.research_data_sharing ?? 
+            ps.research_data_sharing ?? 
+            ps.researchdatasharing ?? 
+            false,
         };
+        
         userProfile = profileData;
       }
     } catch (profileErr) {
@@ -323,7 +376,8 @@ export const doctorController = async (req, res, next) => {
       stream: false,
     });
 
-    const reply = completion?.choices?.[0]?.message?.content?.trim() || "No response generated.";
+  // Safely extract the assistant reply. Use the first choice if available.
+  const reply = completion?.choices?.[0]?.message?.content?.trim() || "No response generated.";
 
     // Save AI response
     const { error: insertAiErr } = await supabase
