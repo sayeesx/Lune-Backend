@@ -202,8 +202,15 @@ export const doctorController = async (req, res, next) => {
     
     const userId = req.user.id;
     
-    // Extract username from email if not provided
-    const patientName = username || req.user.email?.split("@")?.split(/[._]/).map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(" ") || "User";
+    // Extract username from email if not provided - FIXED LINE
+    const patientName = username || 
+      (req.user.email ? 
+        req.user.email
+          .split("@")[0]
+          .split(/[._]/)
+          .map((p) => p.charAt(0).toUpperCase() + p.slice(1))
+          .join(" ") 
+        : "User");
 
     if (!message || !message.trim()) {
       return res.status(400).json({
@@ -373,8 +380,8 @@ export const doctorController = async (req, res, next) => {
       stream: false,
     });
 
-  // Safely extract the assistant reply. Use the first choice if available.
-  const reply = completion?.choices?.[0]?.message?.content?.trim() || "No response generated.";
+    // Safely extract the assistant reply. Use the first choice if available.
+    const reply = completion?.choices?.[0]?.message?.content?.trim() || "No response generated.";
 
     // Save AI response
     const { error: insertAiErr } = await supabase
